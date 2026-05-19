@@ -70,7 +70,6 @@ while getopts ":1j:bcCdDeFghiprstulL" opt ; do
         ;;
     D )
         DRY_RUN="1"
-        FORWARDED_ARGS+=("-D")
         ;;
     e )
         BUILD_DIR=build-dbginfo
@@ -136,7 +135,7 @@ if [[ -n "${CLEAN_DOCKER_IMAGE}" ]] && [[ -z "${USE_DOCKER}" ]] ; then
 fi
 
 function check_available_memory_and_disk() {
-    FREE_MEM_GB=$(free --gibi --total | grep 'Mem' | rev | cut --delimiter=" " --fields=1 | rev)
+    FREE_MEM_GB=$(free --gibi --total | awk '/Mem/{print $NF}')
     MIN_MEM_GB=10
 
     FREE_DISK_KB=$(df --block-size=1K . | tail -1 | awk '{print $4}')
@@ -163,11 +162,10 @@ ERROR: Orca Slicer Builder requires at least $(echo "${MIN_DISK_KB}" |awk '{ pri
 
 function print_and_run() {
     cmd=()
-    # Remove empty arguments, leading and trailing spaces
     for item in "$@" ; do
-        if [[ -n $item ]]; then
-            cmd+=( "$(echo "${item}" | xargs)" )
-        fi
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [[ -n "$item" ]] && cmd+=("$item")
     done
 
     echo "${cmd[@]}"
@@ -336,7 +334,7 @@ function run_in_docker() {
     container_workspace="/__w/OrcaSlicer/OrcaSlicer"
     build_args=()
     for item in "${FORWARDED_ARGS[@]}" ; do
-        if [[ "${item}" == "-u" ]] || [[ "${item}" == "-D" ]] ; then
+        if [[ "${item}" == "-u" ]] ; then
             continue
         fi
 
@@ -413,15 +411,11 @@ function create_builder_user() {
 create_builder_user
 mkdir -p "${GITHUB_WORKSPACE}/deps/build/destdir"
 chown -R "${HOST_UID}:${HOST_GID}" "${GITHUB_WORKSPACE}/deps/build"
-if [[ -d "${GITHUB_WORKSPACE}/build" ]] ; then
-    chown -R "${HOST_UID}:${HOST_GID}" "${GITHUB_WORKSPACE}/build"
-fi
-if [[ -d "${GITHUB_WORKSPACE}/build-dbg" ]] ; then
-    chown -R "${HOST_UID}:${HOST_GID}" "${GITHUB_WORKSPACE}/build-dbg"
-fi
-if [[ -d "${GITHUB_WORKSPACE}/build-dbginfo" ]] ; then
-    chown -R "${HOST_UID}:${HOST_GID}" "${GITHUB_WORKSPACE}/build-dbginfo"
-fi
+for build_dir in build build-dbg build-dbginfo ; do
+    if [[ -d "${GITHUB_WORKSPACE}/${build_dir}" ]] ; then
+        chown -R "${HOST_UID}:${HOST_GID}" "${GITHUB_WORKSPACE}/${build_dir}"
+    fi
+done
 
 sudo -H -u "${HOST_USER}" env \
     CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL-}" \
@@ -448,8 +442,14 @@ fi
 # cmake 4.x compatibility workaround
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
-DISTRIBUTION=$(awk -F= '/^ID=/ {print $2}' /etc/os-release | tr -d '"')
-DISTRIBUTION_LIKE=$(awk -F= '/^ID_LIKE=/ {print $2}' /etc/os-release | tr -d '"')
+while IFS='=' read -r key val; do
+    val="${val//\"/}"
+    case "$key" in
+        ID) DISTRIBUTION="$val" ;;
+        ID_LIKE) DISTRIBUTION_LIKE="$val" ;;
+    esac
+done < /etc/os-release
+
 # Check for direct distribution match to Ubuntu/Debian
 if [ "${DISTRIBUTION}" == "ubuntu" ] || [ "${DISTRIBUTION}" == "linuxmint" ] ; then
     DISTRIBUTION="debian"
